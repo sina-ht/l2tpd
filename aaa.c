@@ -25,7 +25,7 @@ extern void bufferDump (char *, int);
 
 /* FIXME: Accounting? */
 
-static struct addr_ent *uaddr[ADDR_HASH_SIZE];
+struct addr_ent *uaddr[ADDR_HASH_SIZE];
 
 void init_addr ()
 {
@@ -47,7 +47,7 @@ static int ip_used (unsigned int addr)
     return 0;
 }
 
-void mk_challenge (char *c, int length)
+void mk_challenge (unsigned char *c, int length)
 {
     get_entropy(c, length);
 
@@ -133,7 +133,7 @@ unsigned int get_addr (struct iprange *ipr)
     return 0;
 }
 
-int get_secret (char *us, char *them, char *secret, int size)
+static int get_secret (char *us, char *them, unsigned char *secret, int size)
 {
     FILE *f;
     char buf[STRLEN];
@@ -142,7 +142,7 @@ int get_secret (char *us, char *them, char *secret, int size)
     f = fopen (gconfig.authfile, "r");
     if (!f)
     {
-        log (LOG_WARN, "%s : Unable to open '%s' for authentication\n",
+        l2tp_log (LOG_WARN, "%s : Unable to open '%s' for authentication\n",
              __FUNCTION__, gconfig.authfile);
         return 0;
     }
@@ -166,7 +166,7 @@ int get_secret (char *us, char *them, char *secret, int size)
         /* us */
         if (!*u)
         {
-            log (LOG_WARN,
+            l2tp_log (LOG_WARN,
                  "%s: Invalid authentication info (no us), line %d\n",
                  __FUNCTION__, num);
             continue;
@@ -180,7 +180,7 @@ int get_secret (char *us, char *them, char *secret, int size)
         /* them */
         if (!*t)
         {
-            log (LOG_WARN,
+            l2tp_log (LOG_WARN,
                  "%s: Invalid authentication info (nothem), line %d\n",
                  __FUNCTION__, num);
             continue;
@@ -193,7 +193,7 @@ int get_secret (char *us, char *them, char *secret, int size)
             s++;
         if (!*s)
         {
-            log (LOG_WARN,
+            l2tp_log (LOG_WARN,
                  "%s: Invalid authentication info (no secret), line %d\n",
                  __FUNCTION__, num);
             continue;
@@ -202,11 +202,11 @@ int get_secret (char *us, char *them, char *secret, int size)
             (!strcasecmp (t, them) || !strcasecmp (t, "*")))
         {
 #ifdef DEBUG_AUTH
-            log (LOG_DEBUG,
+            l2tp_log (LOG_DEBUG,
                  "%s: we are '%s', they are '%s', secret is '%s'\n",
                  __FUNCTION__, u, t, s);
 #endif
-            strncpy (secret, s, size);
+            strncpy ((char *)secret, s, size);
             return -1;
         }
     }
@@ -219,12 +219,12 @@ int handle_challenge (struct tunnel *t, struct challenge *chal)
     char *them;
     if (!t->lns && !t->lac)
     {
-        log (LOG_DEBUG, "%s: No LNS or LAC to handle challenge!\n",
+        l2tp_log (LOG_DEBUG, "%s: No LNS or LAC to handle challenge!\n",
              __FUNCTION__);
         return -1;
     }
 #ifdef DEBUG_AUTH
-    log (LOG_DEBUG, "%s: making response for tunnel: %d\n", __FUNCTION__,
+    l2tp_log (LOG_DEBUG, "%s: making response for tunnel: %d\n", __FUNCTION__,
          t->ourtid);
 #endif
     if (t->lns)
@@ -251,30 +251,30 @@ int handle_challenge (struct tunnel *t, struct challenge *chal)
     }
     if (!get_secret (us, them, chal->secret, sizeof (chal->secret)))
     {
-        log (LOG_DEBUG, "%s: no secret found for us='%s' and them='%s'\n",
+        l2tp_log (LOG_DEBUG, "%s: no secret found for us='%s' and them='%s'\n",
              __FUNCTION__, us, them);
         return -1;
     }
 
 #if DEBUG_AUTH
-    log (LOG_DEBUG, "*%s: Here comes the chal->ss:\n", __FUNCTION__);
+    l2tp_log (LOG_DEBUG, "*%s: Here comes the chal->ss:\n", __FUNCTION__);
     bufferDump (&chal->ss, 1);
 
-    log (LOG_DEBUG, "%s: Here comes the secret\n", __FUNCTION__);
+    l2tp_log (LOG_DEBUG, "%s: Here comes the secret\n", __FUNCTION__);
     bufferDump (chal->secret, strlen (chal->secret));
 
-    log (LOG_DEBUG, "%s: Here comes the challenge\n", __FUNCTION__);
+    l2tp_log (LOG_DEBUG, "%s: Here comes the challenge\n", __FUNCTION__);
     bufferDump (chal->challenge, strlen (chal->challenge));
 #endif
 
     memset (chal->response, 0, MD_SIG_SIZE);
     MD5Init (&chal->md5);
     MD5Update (&chal->md5, &chal->ss, 1);
-    MD5Update (&chal->md5, chal->secret, strlen (chal->secret));
-    MD5Update (&chal->md5, chal->challenge, strlen(chal->challenge));
+    MD5Update (&chal->md5, chal->secret, strlen((const char *)chal->secret));
+    MD5Update (&chal->md5, chal->challenge, strlen((const char *)chal->challenge));
     MD5Final (chal->response, &chal->md5);
 #ifdef DEBUG_AUTH
-    log (LOG_DEBUG, "response is %X%X%X%X to '%s' and %X%X%X%X, %d\n",
+    l2tp_log (LOG_DEBUG, "response is %X%X%X%X to '%s' and %X%X%X%X, %d\n",
          *((int *) &chal->response[0]),
          *((int *) &chal->response[4]),
          *((int *) &chal->response[8]),
@@ -317,7 +317,7 @@ struct lns *get_lns (struct tunnel *t)
                 (ntohl (t->peer.sin_addr.s_addr) <= ntohl (ipr->end)))
             {
 #ifdef DEBUG_AAA
-                log (LOG_DEBUG,
+                l2tp_log (LOG_DEBUG,
                      "get_lns: Rule %s to %s, sense %s matched %s\n",
                      IPADDY (ipr->start), IPADDY (ipr->end),
                      (ipr->sense ? "allow" : "deny"), IPADDY (t->addr));
@@ -345,14 +345,14 @@ struct lns *get_lns (struct tunnel *t)
 void print_md5 (void *md5)
 {
     int *i = (int *) md5;
-    log (LOG_DEBUG, "%X%X%X%X\n", i[0], i[1], i[2], i[3], i[4]);
+    l2tp_log (LOG_DEBUG, "%X%X%X%X\n", i[0], i[1], i[2], i[3], i[4]);
 }
 
 inline void print_challenge (struct challenge *chal)
 {
-    log (LOG_DEBUG, "vector: ");
+    l2tp_log (LOG_DEBUG, "vector: ");
     print_md5 (chal->vector);
-    log (LOG_DEBUG, "secret: %s\n", chal->secret);
+    l2tp_log (LOG_DEBUG, "secret: %s\n", chal->secret);
 }
 #endif
 void encrypt_avp (struct buffer *buf, _u16 len, struct tunnel *t)
@@ -366,7 +366,7 @@ void encrypt_avp (struct buffer *buf, _u16 len, struct tunnel *t)
     struct avp_hdr *old_hdr =
         (struct avp_hdr *) (buf->start + buf->len - len + 2);
     _u16 length, flags, attr;   /* New length, old flags */
-    char *ptr, *end;
+    unsigned char *ptr, *end;
     int cnt;
     unsigned char digest[MD_SIG_SIZE];
     unsigned char *previous_segment;
@@ -390,20 +390,20 @@ void encrypt_avp (struct buffer *buf, _u16 len, struct tunnel *t)
     MD5Init (&t->chal_them.md5);
     MD5Update (&t->chal_them.md5, (void *) &attr, 2);
     MD5Update (&t->chal_them.md5, t->chal_them.secret,
-               strlen (t->chal_them.secret));
+               strlen((const char *)t->chal_them.secret));
     MD5Update (&t->chal_them.md5, t->chal_them.vector, VECTOR_SIZE);
     MD5Final (digest, &t->chal_them.md5);
 
     /* Though not a "MUST" in the spec, our subformat length is always a multiple of 16 */
-    ptr = ((char *) new_hdr) + sizeof (struct avp_hdr);
-    end = ((char *) new_hdr) + length;
+    ptr = ((unsigned char *) new_hdr) + sizeof (struct avp_hdr);
+    end = ((unsigned char *) new_hdr) + length;
     previous_segment = ptr;
     while (ptr < end)
     {
 #if DEBUG_HIDDEN
-        log (LOG_DEBUG, "%s: The digest to be XOR'ed\n", __FUNCTION__);
+        l2tp_log (LOG_DEBUG, "%s: The digest to be XOR'ed\n", __FUNCTION__);
         bufferDump (digest, MD_SIG_SIZE);
-        log (LOG_DEBUG, "%s: The plaintext to be XOR'ed\n", __FUNCTION__);
+        l2tp_log (LOG_DEBUG, "%s: The plaintext to be XOR'ed\n", __FUNCTION__);
         bufferDump (ptr, MD_SIG_SIZE);
 #endif
         for (cnt = 0; cnt < MD_SIG_SIZE; cnt++, ptr++)
@@ -411,14 +411,14 @@ void encrypt_avp (struct buffer *buf, _u16 len, struct tunnel *t)
             *ptr = *ptr ^ digest[cnt];
         }
 #if DEBUG_HIDDEN
-        log (LOG_DEBUG, "%s: The result of XOR\n", __FUNCTION__);
+        l2tp_log (LOG_DEBUG, "%s: The result of XOR\n", __FUNCTION__);
         bufferDump (previous_segment, MD_SIG_SIZE);
 #endif
         if (ptr < end)
         {
             MD5Init (&t->chal_them.md5);
             MD5Update (&t->chal_them.md5, t->chal_them.secret,
-                       strlen (t->chal_them.secret));
+                       strlen((const char *)t->chal_them.secret));
             MD5Update (&t->chal_them.md5, previous_segment, MD_SIG_SIZE);
             MD5Final (digest, &t->chal_them.md5);
         }
@@ -426,26 +426,26 @@ void encrypt_avp (struct buffer *buf, _u16 len, struct tunnel *t)
     }
 }
 
-int decrypt_avp (char *buf, struct tunnel *t)
+int decrypt_avp (unsigned char *buf, struct tunnel *t)
 {
     /* Decrypts a hidden AVP pointed to by buf.  The
        new header will be exptected to be two characters
        offset from the old */
     int cnt = 0;
     int len, olen, flags;
-    char digest[MD_SIG_SIZE];
-    char *ptr, *end;
+    unsigned char digest[MD_SIG_SIZE];
+    unsigned char *ptr, *end;
     _u16 attr;
     struct avp_hdr *old_hdr = (struct avp_hdr *) buf;
     struct avp_hdr *new_hdr = (struct avp_hdr *) (buf + 2);
     int saved_segment_len;      /* maybe less 16; may be used if the cipher is longer than 16 octets */
-    char saved_segment[MD_SIG_SIZE];
-    ptr = ((char *) old_hdr) + sizeof (struct avp_hdr);
+    unsigned char saved_segment[MD_SIG_SIZE];
+    ptr = ((unsigned char *) old_hdr) + sizeof (struct avp_hdr);
     olen = old_hdr->length & 0x0FFF;
     end = buf + olen;
     if (!t->chal_us.vector)
     {
-        log (LOG_DEBUG,
+        l2tp_log (LOG_DEBUG,
              "decrypt_avp: Hidden bit set, but no random vector specified!\n");
         return -EINVAL;
     }
@@ -456,13 +456,13 @@ int decrypt_avp (char *buf, struct tunnel *t)
     MD5Init (&t->chal_us.md5);
     MD5Update (&t->chal_us.md5, (void *) &attr, 2);
     MD5Update (&t->chal_us.md5, t->chal_us.secret,
-               strlen (t->chal_us.secret));
+               strlen((const char *)t->chal_us.secret));
     MD5Update (&t->chal_us.md5, t->chal_us.vector, t->chal_us.vector_len);
     MD5Final (digest, &t->chal_us.md5);
 #ifdef DEBUG_HIDDEN
-    log (LOG_DEBUG, "attribute is %d and challenge is: ", attr);
+    l2tp_log (LOG_DEBUG, "attribute is %d and challenge is: ", attr);
     print_challenge (&t->chal_us);
-    log (LOG_DEBUG, "md5 is: ");
+    l2tp_log (LOG_DEBUG, "md5 is: ");
     print_md5 (digest);
 #endif
     while (ptr < end)
@@ -471,7 +471,7 @@ int decrypt_avp (char *buf, struct tunnel *t)
         {
             MD5Init (&t->chal_us.md5);
             MD5Update (&t->chal_us.md5, t->chal_us.secret,
-                       strlen (t->chal_us.secret));
+                       strlen((const char *)t->chal_us.secret));
             MD5Update (&t->chal_us.md5, saved_segment, MD_SIG_SIZE);
             MD5Final (digest, &t->chal_us.md5);
             cnt = 0;
@@ -494,7 +494,7 @@ int decrypt_avp (char *buf, struct tunnel *t)
     len = ntohs (new_hdr->attr) + sizeof (struct avp_hdr);
     if (len > olen - 2)
     {
-        log (LOG_DEBUG,
+        l2tp_log (LOG_DEBUG,
              "decrypt_avp: Decrypted length is too long (%d > %d)\n", len,
              olen - 2);
         return -EINVAL;
