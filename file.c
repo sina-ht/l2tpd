@@ -35,6 +35,9 @@ char filerr[STRLEN];
 int parse_config (FILE *);
 struct keyword words[];
 
+unsigned int listen_addy=INADDR_ANY;  /* Address to listen on */    /* mf, 27.03.2003: moved here from network.c */
+char *l2tpdstatusfile="/var/run/l2tpd.status";   /* mf, 27.03.2003: configurable output file for status dumps (SIGUSR1) */
+
 int init_config ()
 {
     FILE *f;
@@ -109,6 +112,8 @@ struct lns *new_lns ()
     tmp->debug = 0;
     tmp->pppoptfile[0] = 0;
     tmp->t = NULL;
+    tmp->ipparam[0] = '\0';
+    tmp->ipparamtunneltag = 0;
     return tmp;
 }
 
@@ -557,6 +562,41 @@ int set_debug (char *word, char *value, int context, void *item)
     return 0;
 }
 
+/* mf, 08.04.2003: option to give tunneltag to pppd via ipparam (l2gw=<tunneltag>) */
+int set_ipparamtunneltag(char *word, char *value, int context, void *item)
+{
+    switch (context & ~CONTEXT_DEFAULT)
+    {
+    case CONTEXT_LNS:
+        if (set_boolean (word, value, &(((struct lns *) item)->ipparamtunneltag)))
+            return -1;
+        break;
+    default:
+        snprintf (filerr, sizeof (filerr), "'%s' not valid in this context\n",
+                  word);
+        return -1;
+    }
+    return 0;
+}
+
+/* mf, 08.04.2003: configure static ipparam argument for pppd */
+int set_ipparam(char *word, char *value, int context, void *item)
+{
+    struct lns *n = (struct lns *) item;
+    switch (context & ~CONTEXT_DEFAULT)
+    {
+    case CONTEXT_LNS:
+        if (set_string (word, value, n->ipparam, sizeof (n->ipparam)))
+            return -1;
+        break;
+    default:
+        snprintf (filerr, sizeof (filerr), "'%s' not valid in this context\n",
+                  word);
+        return -1;
+    }
+    return 0;
+}
+
 int set_pppoptfile (char *word, char *value, int context, void *item)
 {
     struct lac *l = (struct lac *) item;
@@ -599,7 +639,7 @@ int set_papchap (char *word, char *value, int context, void *item)
                 l->pap_require = result;
         else if (c[0] == 'a')   /* Authentication */
             if (word[2] == 'f')
-                l->authself = result;
+                l->authself = !result; /* mferd, 04.02.2003: missing ! */
             else
                 l->authpeer = result;
         else /* CHAP */ if (word[2] == 'f')
@@ -763,8 +803,9 @@ int set_iprange (char *word, char *value, int context, void *item)
     if (!lns->range)
         return -1;
 #ifdef DEBUG_FILE
+    /* mferd, 29.01.2003: ipr not defined, give info about lns->range instead */
     l2tp_log (LOG_DEBUG, "range start = %x, end = %x, sense=%ud\n",
-         ntohl (ipr->start), ntohl (ipr->end), ipr->sense);
+         ntohl (lns->range->start), ntohl (lns->range->end), lns->range->sense);
 #endif
     return 0;
 }
@@ -785,8 +826,9 @@ int set_lac (char *word, char *value, int context, void *item)
     if (!lns->lacs)
         return -1;
 #ifdef DEBUG_FILE
+    /* mferd, 29.01.2003: ipr undefined, info about lns->lacs instead */
     l2tp_log (LOG_DEBUG, "lac start = %x, end = %x, sense=%ud\n",
-         ntohl (ipr->start), ntohl (ipr->end), ipr->sense);
+         ntohl (lns->lacs->start), ntohl (lns->lacs->end), lns->lacs->sense);
 #endif
     return 0;
 }
@@ -818,6 +860,60 @@ int set_ip (char *word, char *value, unsigned int *addr)
         return -1;
     }
     bcopy (hp->h_addr, addr, sizeof (unsigned int));
+    return 0;
+}
+
+/* mf, 27.03.2003: set listenaddr */
+int set_listenaddr(char *word, char *value, int context, void *item)
+{
+    switch (context & ~CONTEXT_DEFAULT)
+    {
+    case CONTEXT_GLOBAL:
+#ifdef DEBUG_FILE
+        l2tp_log (LOG_DEBUG, "set_listenaddr: Setting global listen address to %s\n",
+             value);
+#endif
+        return set_ip (word, value, &listen_addy);
+        break;
+    default:
+        snprintf (filerr, sizeof (filerr), "'%s' not valid in this context\n",
+                  word);
+        return -1;
+    }
+    return 0;
+}
+
+/* mf, 27.03.2003: set statusfile (for SIGUSR1 status dumps) */
+int set_statusfile (char *word, char *value, int context, void *item)
+{
+    char *vdup;
+
+    if (!strlen (value))
+    {
+        snprintf (filerr, sizeof (filerr),
+                  "no filename specified for statusfile\n");
+        return -1;
+    }
+    switch (context & ~CONTEXT_DEFAULT)
+    {
+    case CONTEXT_GLOBAL:
+#ifdef DEBUG_FILE
+        l2tp_log (LOG_DEBUG, "%s: Setting status file to '%s'\n",
+             __FUNCTION__, value);
+#endif /* ; */
+        vdup=strdup(value);
+        if (!vdup)
+          { l2tp_log (LOG_WARN, "%s: cannot duplicate statusfile name",
+                 __FUNCTION__);
+            return -1;
+          }
+        l2tpdstatusfile=vdup;
+        break;
+    default:
+        snprintf (filerr, sizeof (filerr), "'%s' not valid in this context\n",
+                  word);
+        return -1;
+    }
     return 0;
 }
 
@@ -1197,6 +1293,8 @@ int parse_config (FILE * f)
 
 struct keyword words[] = {
     {"port", &set_port},
+    {"listenaddr", &set_listenaddr},     /* mf, 27.03.2003: restrict socket to specific address */
+    {"statusfile", &set_statusfile},     /* mf, 27.03.2003: configurable file for status dumps (SIGUSR1) */
     {"rand source", &set_rand_source},
     {"auth file", &set_authfile},
     {"exclusive", &set_exclusive},
@@ -1229,6 +1327,8 @@ struct keyword words[] = {
     {"name", &set_authname},
     {"hostname", &set_hostname},
     {"ppp debug", &set_debug},
+    {"ipparam_tunneltag", &set_ipparamtunneltag},/* mf, 08.04.2003: provide tunneltag to pppd in ipparam? */
+    {"ipparam", &set_ipparam},			/* mf, 08.04.2003: set ipparam arg to pppd */
     {"pppoptfile", &set_pppoptfile},
     {"call rws", &set_rws},
     {"tunnel rws", &set_rws},

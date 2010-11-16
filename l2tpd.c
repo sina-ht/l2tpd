@@ -14,6 +14,7 @@
  */
 
 #include <stdlib.h>
+#include <sys/types.h>
 #include <sys/utsname.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -39,6 +40,7 @@
 #ifdef USE_KERNEL
 #include <sys/ioctl.h>
 #endif
+#include <time.h>		/* mf, 08.05.2003: nanosleep */
 #include "l2tp.h"
 
 struct tunnel_list tunnels;
@@ -129,6 +131,10 @@ void show_status (int fd)
                       entname : (c->lns ? c->lns->entname : "")), c->ourcid,
                      c->cid, c->serno, c->data_seq_num, c->data_rec_seq_num,
                      c->pLr, c->tx_bytes, c->tx_pkts, c->rx_bytes, c->rx_pkts);
+             /* mf, 27.03.2003: add compact id usable for scripts */
+             fprintf (f, "      tty=%s, pppd_pid=%d, tag=%d/%d/%u, peer=%s:%d\n",
+                      c->ptyname, c->pppd, c->ourcid, c->cid, c->serno,
+                      IPADDY (t->peer.sin_addr), ntohs (t->peer.sin_port));
             c = c->next;
         }
         t = t->next;
@@ -175,7 +181,13 @@ void null_handler(int sig)
 
 void status_handler (int sig)
 {
-    show_status (1);
+    /* mf, 27.03.2003: write status info to configured statusfile */
+    /*                 allows to view status info in daemon mode  */
+    FILE *status;
+   
+    status=fopen(l2tpdstatusfile, "w");
+    show_status(fileno(status));
+    fclose(status);
 }
 
 void child_handler (int signal)
@@ -259,7 +271,7 @@ void death_handler (int signal)
 
 int start_pppd (struct call *c, struct ppp_opts *opts)
 {
-    char a, b;
+    int flags;
     char tty[80];
     char *stropt[80];
     struct ppp_opts *p;
@@ -271,7 +283,6 @@ int start_pppd (struct call *c, struct ppp_opts *opts)
 #ifdef DEBUG_PPPD
     int x;
 #endif
-    struct termios ptyconf;
     char *str;
     p = opts;
     stropt[0] = strdup (PPPD);
@@ -309,22 +320,12 @@ int start_pppd (struct call *c, struct ppp_opts *opts)
     else
     {
 #endif
-        if ((c->fd = getPtyMaster (&a, &b)) < 0)
+        if (pty_get(&c->fd, &fd2) < 0)
         {
             l2tp_log (LOG_WARN, "%s: unable to allocate pty, abandoning!\n",
                  __FUNCTION__);
             return -EINVAL;
         }
-
-        /* set fd opened above to not echo so we don't see read our own packets
-           back of the file descriptor that we just wrote them to */
-        tcgetattr (c->fd, &ptyconf);
-        *(c->oldptyconf) = ptyconf;
-        ptyconf.c_cflag &= ~(ICANON | ECHO);
-        tcsetattr (c->fd, TCSANOW, &ptyconf);
-
-        snprintf (tty, sizeof (tty), "/dev/tty%c%c", a, b);
-        fd2 = open (tty, O_RDWR);
 
 #ifdef USE_KERNEL
     }
@@ -388,9 +389,15 @@ int start_pppd (struct call *c, struct ppp_opts *opts)
         execv (PPPD, stropt);
         l2tp_log (LOG_WARN, "%s: Exec of %s failed!\n", __FUNCTION__, PPPD);
         exit (1);
-    };
+    }
+    /* mferd, 05.02.2003: race condition? ppp packets received are echoed until pppd comes up; 
+                                          workaround: lose some time and hope pppd comes up fast enough... */
+     else { /* sleep(1); */ struct timespec req, rem; req.tv_sec=0; req.tv_nsec= 300000000L; nanosleep(&req,&rem); }
+
     close (fd2);
     pos = 0;
+    flags = fcntl(c->fd, F_GETFL);
+    if (flags >= 0) fcntl(c->fd, F_SETFL, (long) flags | O_NONBLOCK);
     while (stropt[pos])
     {
         free (stropt[pos]);
@@ -409,6 +416,7 @@ void destroy_tunnel (struct tunnel *t)
      */
 
     struct call *c, *me;
+    struct call *c2;		/* mf, 26.06.2004: needed for walk through list while freeing it */
     struct tunnel *p;
     struct timeval tv;
     if (!t)
@@ -429,8 +437,9 @@ void destroy_tunnel (struct tunnel *t)
     c = t->call_head;
     while (c)
     {
+        c2 = c->next;	/* mf, 26.06.2004: can't use c->next after freeing c */
         destroy_call (c);
-        c = c->next;
+        c = c2;		/* mf, 26.06.2004: can't use c->next after freeing c */
     };
     /*
      * Remove ourselves from the list of tunnels
@@ -483,6 +492,7 @@ void destroy_tunnel (struct tunnel *t)
      */
     if (t->lns)
         t->lns->t = NULL;
+    if (t->tunneltag) { free(t->tunneltag); }  /* mf, 03.04.2003: also free tunnel tag if allocated */
     free (t);
     free (me);
 }
@@ -731,6 +741,9 @@ struct tunnel *new_tunnel ()
     tmp->hostname[0] = 0;
     tmp->vendor[0] = 0;
     tmp->secret[0] = 0;
+    /* mf, 14.06.2004: valgrind suggested initializing parent->self */
+    tmp->self = (struct call *) NULL;
+
     if (!(tmp->self = new_call (tmp)))
     {
         free (tmp);
@@ -749,6 +762,8 @@ struct tunnel *new_tunnel ()
     tmp->chal_them.vector = (unsigned char *) malloc (VECTOR_SIZE);
     tmp->chal_us.vector = NULL;
     tmp->hbit = 0;
+    /* mf, 03.04.2003: tunneltag invalid until after connection is established */
+    tmp->tunneltag = NULL;
     return tmp;
 }
 
@@ -1002,29 +1017,43 @@ void daemonize() {
     /* Read previous pid file. */
     if ((i = open(gconfig.pidfile,O_RDONLY)) > 0) {
         l=read(i,buf,sizeof(buf)-1);
-        if (i < 0) {
+        /* mf, 27.03.2003: usage of "i" (filedescr) corrected to "l" (length) */
+        if (l < 0) {
             l2tp_log(LOG_LOG, "%s: Unable to read pid file [%s]\n",
                     __FUNCTION__, gconfig.pidfile);
         }
-        buf[i] = '\0';
+        buf[l] = '\0';
         pid = atoi(buf);
 
         /* If the previous server process is not still running,
            write a new pid file immediately. */
-        if (pid && (pid == getpid () || kill (pid, 0) < 0)) {
+        /* mf, 27.03.2003: also handle case pid=0 (e.g. empty pid file) */
+        if (pid==0 || (pid && (pid == getpid () || kill (pid, 0) < 0))) {
             unlink (gconfig.pidfile);
             if ((i = open (gconfig.pidfile, O_WRONLY | O_CREAT, 0640)) >= 0)
             {
                 snprintf (buf, sizeof(buf), "%d\n", (int)getpid());
-                write (i, buf, strlen(buf));
+                l=write (i, buf, strlen(buf));
+                if (l!=(int)strlen(buf))	/* mf, 04.05.2004: cast to (int), avoid compiler warning */
+                  { l2tp_log(LOG_LOG, "%s: error overwriting pid file with %s\n",
+                        __FUNCTION__, buf);
+                  }
+                else l2tp_log(LOG_LOG, "overwrote pid file with %s\n", buf);
                 close (i);
                 pidfilewritten = 1;
+                l2tp_log(LOG_LOG, "%s: wrote pid to file %s\n",
+                    __FUNCTION__, gconfig.pidfile);
             }
+            /* mf, 27.03.2003: cannot write pid file ?!? */
+            else
+              { l2tp_log(LOG_LOG, "%s: cannot write to pid file %s\n",
+                    __FUNCTION__, gconfig.pidfile);
+              }
         }
         else
         {
-            l2tp_log(LOG_LOG, "%s: There's already a l2tpd server running.\n",
-                    __FUNCTION__);
+            l2tp_log(LOG_LOG, "%s: There's already a l2tpd server running (pid=%d).\n",
+                    __FUNCTION__, (int) pid);
             close(server_socket);
             exit(1);
         }
@@ -1035,12 +1064,21 @@ void daemonize() {
     if(! pidfilewritten) {
         unlink(gconfig.pidfile);
         if ((i = open (gconfig.pidfile, O_WRONLY | O_CREAT, 0640)) >= 0) {
-            snprintf (buf, strlen(buf), "%d\n", (int)getpid());
-            write (i, buf, strlen(buf));
+            /* mf, 27.03.2003: correct strlen(buf) => sizeof(buf) */
+            snprintf (buf, sizeof(buf), "%d\n", (int)getpid());
+            l2tp_log(LOG_LOG, "pid is %s\n", buf);
+            l=write (i, buf, strlen(buf));
+            if (l!=(int)strlen(buf))	/* mf, 04.05.2004: cast to (int), avoid compiler warning */
+              { l2tp_log(LOG_LOG, "%s: error writing pid file\n",
+                    __FUNCTION__);
+              }
+             else l2tp_log(LOG_LOG, "pid file with %s\n", buf);
             close (i);
             pidfilewritten = 1;
         }
     }
+    /* mf, 27.03.2003: log successful daemonization */
+    l2tp_log(LOG_LOG, "daemonize successfully completed\n");
 }
 
 
@@ -1081,7 +1119,7 @@ void init (int argc,char *argv[])
              __FUNCTION__);
         exit (1);
     }
-    l2tp_log (LOG_LOG, "l2tpd version " SERVER_VERSION " started on %s PID:%d\n",
+    l2tp_log (LOG_LOG, "l2tpd version " SERVER_VERSION SPECIAL_VERSION " started on %s PID:%d\n",
          hostname, getpid ());
     l2tp_log (LOG_LOG,
          "Written by Mark Spencer, Copyright (C) 1998, Adtran, Inc.\n");
@@ -1095,7 +1133,7 @@ void init (int argc,char *argv[])
         if (lac->autodial)
         {
 #ifdef DEBUG_MAGIC
-            log (LOG_DEBUG, "%s: Autodialing '%s'\n", __FUNCTION__,
+            l2tp_log (LOG_DEBUG, "%s: Autodialing '%s'\n", __FUNCTION__,
                  lac->entname[0] ? lac->entname : "(unnamed)");
 #endif
             lac->active = -1;

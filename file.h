@@ -89,6 +89,8 @@ struct lns
     int proxyauth;              /* Allow proxy authentication? */
     int debug;                  /* Debug PPP? */
     char pppoptfile[STRLEN];    /* File containing PPP options */
+    char ipparam[STRLEN];	/* mf, 08.04.2003: ipparam to provide for pppd */
+    int  ipparamtunneltag; 	/* mf, 08.04.2003: provide tunneltag to pppd via ipparam? */
     struct tunnel *t;           /* Tunnel of this, if it's ready */
 };
 
@@ -148,4 +150,7 @@ extern struct lac *laclist;     /* All LAC entries */
 extern struct lns *deflns;      /* Default LNS config */
 extern struct lac *deflac;      /* Default LAC config */
 extern int init_config ();      /* Read in the config file */
+extern unsigned int listen_addy;  /* Address to listen on */	/* mf, 27.03.2003: moved here from network.c */
+extern char *l2tpdstatusfile;	/* mf, 27.03.2003: configurable output file for status dumps (SIGUSR1) */
+
 #endif

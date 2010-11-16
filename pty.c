@@ -1,62 +1,94 @@
-/*
- * Layer Two Tunnelling Protocol Daemon
- * Copyright (C) 1998 Adtran, Inc.
- * Copyright (C) 2002 Jeff McAdams
- *
- * Mark Spencer
- *
- * This software is distributed under the terms
- * of the GPL, which you should have received
- * along with this source.
- *
- * Pseudo-pty allocation routines...  Concepts and code borrowed
- * from pty-redir by Magosanyi Arpad.
- *
- */
+/***********************************************************************
+*
+* pty.c
+*
+* Code for dealing with pseudo-tty's for running pppd.
+*
+* Copyright (C) 2002 Roaring Penguin Software Inc.
+*
+* This software may be distributed under the terms of the GNU General
+* Public License, Version 2, or (at your option) any later version.
+*
+* LIC: GPL
+*
+***********************************************************************/
 
 #include "l2tp.h"
+#include "misc.h"
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <fcntl.h>
-
-#ifdef SOLARIS
-#define PTY00 "/dev/ptyXX"
-#define PTY10 "pqrstuvwxyz"
-#define PTY01 "0123456789abcdef"
+#include <stdio.h>
+#include <unistd.h>
+#ifndef N_HDLC
+#include <linux/termios.h>
 #endif
 
-#ifdef LINUX
-#define PTY00 "/dev/ptyXX"
-#define PTY10 "pqrstuvwxyzabcde"
-#define PTY01 "0123456789abcdef"
-#endif
-
-#ifdef FREEBSD
-#define PTY00 "/dev/ptyXX"
-#define PTY10 "p"
-#define PTY01 "0123456789abcdefghijklmnopqrstuv"
-#endif
-
-int getPtyMaster (char *tty10, char *tty01)
+/**********************************************************************
+* %FUNCTION: pty_get
+* %ARGUMENTS:
+*  mfp -- pointer to master file descriptor
+*  sfp -- pointer to slave file descriptor
+* %RETURNS:
+*  0 on success, -1 on failure
+* %DESCRIPTION:
+*  Opens a PTY and sets line discipline to N_HDLC for ppp.
+*  Taken almost verbatim from Linux pppd code.
+***********************************************************************/
+int
+pty_get(int *mfp, int *sfp)
 {
-    char *p10;
-    char *p01;
-    static char dev[] = PTY00;
-    int fd;
+    char pty_name[24];
+    struct termios tios;
+    int mfd, sfd;
+    int disc = N_HDLC;
 
-    for (p10 = PTY10; *p10; p10++)
-    {
-        dev[8] = *p10;
-        for (p01 = PTY01; *p01; p01++)
-        {
-            dev[9] = *p01;
-            fd = open (dev, O_RDWR | O_NONBLOCK);
-            if (fd >= 0)
-            {
-                *tty10 = *p10;
-                *tty01 = *p01;
-                return fd;
+    mfd = -1;
+    sfd = -1;
+
+    mfd = open("/dev/ptmx", O_RDWR);
+    if (mfd >= 0) {
+        int ptn;
+        if (ioctl(mfd, TIOCGPTN, &ptn) >= 0) {
+            snprintf(pty_name, sizeof(pty_name), "/dev/pts/%d", ptn);
+            ptn = 0;
+            if (ioctl(mfd, TIOCSPTLCK, &ptn) < 0) {
+                /* warn("Couldn't unlock pty slave %s: %m", pty_name); */
+            }
+            if ((sfd = open(pty_name, O_RDWR | O_NOCTTY)) < 0) {
+                /* warn("Couldn't open pty slave %s: %m", pty_name); */
             }
         }
     }
-    l2tp_log (LOG_CRIT, "%s: No more free pseudo-tty's\n", __FUNCTION__);
-    return -1;
+
+    if (sfd < 0 || mfd < 0) {
+        if (sfd >= 0) close(sfd);
+        if (mfd >= 0) close(mfd);
+        return -1;
+    }
+
+    *mfp = mfd;
+    *sfp = sfd;
+    if (tcgetattr(sfd, &tios) == 0) {
+        tios.c_cflag &= ~(CSIZE | CSTOPB | PARENB);
+        tios.c_cflag |= CS8 | CREAD | CLOCAL;
+        tios.c_iflag  = IGNPAR;
+        tios.c_oflag  = 0;
+        tios.c_lflag  = 0;
+        tcsetattr(sfd, TCSAFLUSH, &tios);
+    }
+    if (ioctl(sfd, TIOCSETD, &disc) < 0) {
+        l2tp_log(LOG_DEBUG,"Unable to set line discipline to N_HDLC");
+        close(mfd);
+        close(sfd);
+        return -1;
+    }
+    disc = N_HDLC;
+    if (ioctl(mfd, TIOCSETD, &disc) < 0) {
+        l2tp_log(LOG_DEBUG,"Unable to set line discipline to N_HDLC");
+        close(mfd);
+        close(sfd);
+        return -1;
+    }
+    return 0;
 }

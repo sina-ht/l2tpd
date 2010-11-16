@@ -70,6 +70,7 @@ struct call
     struct tunnel *container;   /* Tunnel we belong to */
     int fd;                     /* File descriptor for pty */
     struct termios *oldptyconf;
+    char ptyname[6];		/* mf, 08.04.2003: string for ptyname */
     int die;
     int nego;                   /* Show negotiation? */
     int pppd;                   /* PID of pppd */
@@ -82,12 +83,15 @@ struct call
     int pnu;                    /* ditto for payload packet */
     char errormsg[MAXSTRLEN];   /* Error message */
 /*	int rws;		Receive window size, or -1 for none */
+/* mferd, 30.01.2003: rws missing? */ int rws;
     struct timeval lastsent;    /* When did we last send something? */
     _u16 data_seq_num;          /* Sequence for next payload packet */
     _u16 data_rec_seq_num;      /* Sequence for next received payload packet */
     _u16 closeSs;               /* What number was in Ns when we started to 
                                    close? */
     int pLr;                    /* Last packet received by peer */
+/* mferd, 29.01.2003: pSr missing? */ _u16 pSr;
+/* mferd, 30.01.2003: pSr missing? */ _u16 pSs;
     struct lns *lns;            /* LNS that owns us */
     struct lac *lac;            /* LAC that owns us */
     char dial_no[128];          /* jz: dialing number for outgoing call */

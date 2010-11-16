@@ -116,7 +116,8 @@ extern int add_challenge_avp (struct buffer *, unsigned char *, int);
 extern int add_avp_rws (struct buffer *, _u16);
 extern int add_tunnelid_avp (struct buffer *, _u16);
 extern int add_vendor_avp (struct buffer *);
-extern int add_hostname_avp (struct buffer *);
+/* mferd, 30.01.2003: hostname as arg to add_hostname_avp */
+extern int add_hostname_avp (struct buffer *, char *);
 extern int add_firmware_avp (struct buffer *);
 extern int add_bearer_caps_avp (struct buffer *buf, _u16 caps);
 extern int add_frame_caps_avp (struct buffer *buf, _u16 caps);

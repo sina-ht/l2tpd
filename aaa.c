@@ -21,7 +21,7 @@
 #include <errno.h>
 #include "l2tp.h"
 
-extern void bufferDump (char *, int);
+extern void bufferDump (unsigned char *, int);
 
 /* FIXME: Accounting? */
 
@@ -261,10 +261,10 @@ int handle_challenge (struct tunnel *t, struct challenge *chal)
     bufferDump (&chal->ss, 1);
 
     l2tp_log (LOG_DEBUG, "%s: Here comes the secret\n", __FUNCTION__);
-    bufferDump (chal->secret, strlen (chal->secret));
+    bufferDump (chal->secret, strlen ((char *)chal->secret));
 
     l2tp_log (LOG_DEBUG, "%s: Here comes the challenge\n", __FUNCTION__);
-    bufferDump (chal->challenge, strlen (chal->challenge));
+    bufferDump (chal->challenge, strlen ((char *)chal->challenge));
 #endif
 
     memset (chal->response, 0, MD_SIG_SIZE);
@@ -275,7 +275,7 @@ int handle_challenge (struct tunnel *t, struct challenge *chal)
     MD5Final (chal->response, &chal->md5);
 #ifdef DEBUG_AUTH
     l2tp_log (LOG_DEBUG, "response is %X%X%X%X to '%s' and %X%X%X%X, %d\n",
-         *((int *) &chal->response[0]),
+	 *((int *) &chal->response[0]),
          *((int *) &chal->response[4]),
          *((int *) &chal->response[8]),
          *((int *) &chal->response[12]),
@@ -317,10 +317,11 @@ struct lns *get_lns (struct tunnel *t)
                 (ntohl (t->peer.sin_addr.s_addr) <= ntohl (ipr->end)))
             {
 #ifdef DEBUG_AAA
+		/* mferd, 29.01.2003: t->addr #ifdef'd out ... */
                 l2tp_log (LOG_DEBUG,
                      "get_lns: Rule %s to %s, sense %s matched %s\n",
                      IPADDY (ipr->start), IPADDY (ipr->end),
-                     (ipr->sense ? "allow" : "deny"), IPADDY (t->addr));
+                     (ipr->sense ? "allow" : "deny"), IPADDY (t->peer.sin_addr.s_addr));
 #endif
                 allow = ipr->sense;
             }

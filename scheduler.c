@@ -57,6 +57,8 @@ void alarm_handler (int signal)
     {
         /* Whoa, we got called from within ourselves! */
         l2tp_log (LOG_DEBUG, "%s : Whoa... cnt = %d\n", __FUNCTION__, cnt);
+        /* mf, 14.06.2004: decrement counter on exit */
+        cnt--;
         return;
     }
     while (events)

@@ -1596,6 +1596,7 @@ int handle_avps (struct buffer *buf, struct tunnel *t, struct call *c)
     int hidlen = 0;
     unsigned char *data = buf->start + sizeof (struct control_hdr);
     avp = (struct avp_hdr *) data;
+
     if (debug_avp)
         l2tp_log (LOG_DEBUG, "%s: handling avp's for tunnel %d, call %d\n",
              __FUNCTION__, t->ourtid, c->ourcid);

@@ -37,6 +37,9 @@ typedef unsigned long long _u64;
 
 #define BINARY "l2tpd"
 #define SERVER_VERSION "0.69"
+#ifndef SPECIAL_VERSION
+#  define SPECIAL_VERSION ""
+#endif
 #define VENDOR_NAME "l2tpd.org"
 #define PPPD		"/usr/sbin/pppd"
 #define CALL_PPP_OPTS "defaultroute"
@@ -88,7 +91,9 @@ struct payload_hdr
 #define PAYLOAD_BUF 10          /* Provide 10 expansion bytes
                                    so we can "decompress" the
                                    payloads and simplify coding */
-#define DEFAULT_MAX_RETRIES 5   /* Recommended value from spec */
+/* mf, 05.10.2003: increased DEFAULT_MAX_RETRIES to avoid breakdowns */
+/* #define DEFAULT_MAX_RETRIES 5 */  /* Recommended value from spec */
+#define DEFAULT_MAX_RETRIES 8
 #define DEFAULT_RWS_SIZE   4    /* Default max outstanding 
                                    control packets in queue */
 #define DEFAULT_TX_BPS		10000000        /* For outgoing calls, report this speed */
@@ -156,6 +161,8 @@ struct tunnel
     struct call *self;
     struct lns *lns;            /* LNS that owns us */
     struct lac *lac;            /* LAC that owns us */
+    char *tunneltag;		/* mf, 03.04.2003: string representing tunnel: peer a.b.c.d:p, ltunnelid num, rtunnelid num;
+                                                   valid only after completing connection! */
 };
 
 struct tunnel_list

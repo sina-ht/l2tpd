@@ -136,7 +136,7 @@ void hello (void *tun)
     if (packet_dump)
         do_packet_dump (buf);
 #ifdef DEBUG_HELLO
-    l2pt_log (LOG_DEBUG, "%s: sending Hello on %d\n", __FUNCTION__, t->ourtid);
+    l2tp_log (LOG_DEBUG, "%s: sending Hello on %d\n", __FUNCTION__, t->ourtid);
 #endif
     control_xmit (buf);
     /*
@@ -161,6 +161,28 @@ void control_zlb (struct buffer *buf, struct tunnel *t, struct call *c)
     udp_xmit (buf);
 }
 
+/* mferd, 04.02.2003: make sure challenge storage is malloc'd */
+#define MALLOC_CHALLENGE(data,size)					\
+	 { data=malloc(size);						\
+           if (!(data))							\
+            {								\
+                l2tp_log (LOG_WARN, "%s: malloc failed\n", __FUNCTION__);	\
+                set_error (c, VENDOR_ERROR, "malloc failed");		\
+                toss (buf);						\
+                return -EINVAL;						\
+            }								\
+	 }
+
+/* mf, 03.04.2003: provide string representation of tunnel in newly malloc'd memory  */
+char *get_tunneltag (struct tunnel *t)
+  { char tag[128];
+
+    sprintf(tag, "%s:%d/rt=%d/lt=%d",
+                 IPADDY (t->peer.sin_addr), ntohs (t->peer.sin_port),
+                 t->tid, t->ourtid);
+    return(strdup(tag));
+  }
+
 int control_finish (struct tunnel *t, struct call *c)
 {
     /*
@@ -183,6 +205,9 @@ int control_finish (struct tunnel *t, struct call *c)
     char ip1[STRLEN];
     char ip2[STRLEN];
     char dummy_buf[128] = "/var/l2tp/"; /* jz: needed to read /etc/ppp/var.options - just kick it if you dont like */
+    char *my_l2tp_hostname;	/* mferd, 30.01.2003: use "hostname" set in l2tpd.conf */
+    char my_ipparam[STRLEN];		/* mf, 08.04.2003: used to construct ipparam arg to pppd */
+
     if (c->msgtype < 0)
     {
         l2tp_log (LOG_DEBUG, "%s: Whoa...  non-ZLB with no message type!\n",
@@ -201,6 +226,24 @@ int control_finish (struct tunnel *t, struct call *c)
          */
         if (t->self == c)
         {
+            /* mferd, 30.01.2003: set my_l2tp_hostname to configured lns resp. lac hostname */
+            /*                    use network hostname as fallback                       */
+            /* my_l2tp_hostname=t->lns ? t->lns->hostname : t->lac ? t->lac->hostname : hostname; */
+            my_l2tp_hostname="\0";
+            if (t->lns)
+              { l2tp_log(LOG_WARN, "my configured LNS hostname: %s\n", t->lns->hostname);
+                my_l2tp_hostname=t->lns->hostname;
+              }
+            else if (t->lac)
+              { l2tp_log(LOG_WARN, "my configured LAC hostname: %s\n", t->lac->hostname);
+                my_l2tp_hostname=t->lac->hostname;
+              }
+            if (!strlen(my_l2tp_hostname))
+              { l2tp_log(LOG_WARN, "no configured LAC/LNS hostname found, using network hostname %s",
+                               hostname);
+                my_l2tp_hostname=hostname;
+              }
+
             if (t->lns)
             {
                 t->ourrws = t->lns->tun_rws;
@@ -225,14 +268,15 @@ int control_finish (struct tunnel *t, struct call *c)
             add_bearer_caps_avp (buf, t->ourbc);
             /* FIXME:  Tie breaker */
             add_firmware_avp (buf);
-            add_hostname_avp (buf);
+            add_hostname_avp (buf, my_l2tp_hostname);
             add_vendor_avp (buf);
             add_tunnelid_avp (buf, t->ourtid);
             if (t->ourrws >= 0)
                 add_avp_rws (buf, t->ourrws);
             if ((t->lac && t->lac->challenge)
                 || (t->lns && t->lns->challenge))
-            {
+            {   /* mferd, 04.02.2003: challenge storage needs malloc */
+                MALLOC_CHALLENGE(t->chal_them.challenge, MD_SIG_SIZE)
                 mk_challenge (t->chal_them.challenge, MD_SIG_SIZE);
                 add_challenge_avp (buf, t->chal_them.challenge, MD_SIG_SIZE);
                 t->chal_them.state = STATE_CHALLENGED;
@@ -357,6 +401,24 @@ int control_finish (struct tunnel *t, struct call *c)
             c->needclose = -1;
             return -EINVAL;
         }
+            /* mferd, 30.01.2003: set my_l2tp_hostname to configured lns resp. lac hostname */
+            /*                    use network hostname as fallback                       */
+            /* my_l2tp_hostname=t->lns ? t->lns->hostname : t->lac ? t->lac->hostname : hostname; */
+            my_l2tp_hostname="\0";
+            if (t->lns)
+              { l2tp_log(LOG_WARN, "my configured LNS hostname: %s\n", t->lns->hostname);
+                my_l2tp_hostname=t->lns->hostname;
+              }
+            else if (t->lac)
+              { l2tp_log(LOG_WARN, "my configured LAC hostname: %s\n", t->lac->hostname);
+                my_l2tp_hostname=t->lac->hostname;
+              }
+            if (!strlen(my_l2tp_hostname))
+              { l2tp_log(LOG_WARN, "no configured LAC/LNS hostname found, using network hostname %s\n",
+                               hostname);
+                my_l2tp_hostname=hostname;
+              }
+
         t->ourrws = t->lns->tun_rws;
         t->hbit = t->lns->hbit;
         if (t->fc < 0)
@@ -425,7 +487,7 @@ int control_finish (struct tunnel *t, struct call *c)
         add_frame_caps_avp (buf, t->ourfc);
         add_bearer_caps_avp (buf, t->ourbc);
         add_firmware_avp (buf);
-        add_hostname_avp (buf);
+        add_hostname_avp (buf, my_l2tp_hostname);
         add_vendor_avp (buf);
         add_tunnelid_avp (buf, t->ourtid);
         if (t->ourrws >= 0)
@@ -583,10 +645,13 @@ int control_finish (struct tunnel *t, struct call *c)
              t->ourtid);
 #endif
         t->hello = schedule (tv, hello, (void *) t);
-        l2tp_log (LOG_LOG,
+        t->tunneltag = get_tunneltag(t);
+        /* mf, 03.04.2003: use tunneltag in log message */
+        /*l2tp_log (LOG_LOG,
              "%s: Connection established to %s, %d.  Local: %d, Remote: %d.\n",
              __FUNCTION__, IPADDY (t->peer.sin_addr),
-             ntohs (t->peer.sin_port), t->ourtid, t->tid);
+             ntohs (t->peer.sin_port), t->ourtid, t->tid);*/
+        l2tp_log (LOG_LOG, "%s: Connection established to %s\n", t->tunneltag);
         if (t->lac)
         {
             /* This is part of a LAC, so we want to go ahead
@@ -619,10 +684,14 @@ int control_finish (struct tunnel *t, struct call *c)
         }
 #endif
         t->state = SCCCN;
-        l2tp_log (LOG_LOG,
+        t->tunneltag = get_tunneltag(t);
+        /* mf, 03.04.2003: use tunneltag in log message */
+        /*l2tp_log (LOG_LOG,
              "%s: Connection established to %s, %d.  Local: %d, Remote: %d.  LNS session is '%s'\n",
              __FUNCTION__, IPADDY (t->peer.sin_addr),
-             ntohs (t->peer.sin_port), t->ourtid, t->tid, t->lns->entname);
+             ntohs (t->peer.sin_port), t->ourtid, t->tid, t->lns->entname); */
+        l2tp_log (LOG_LOG, "%s: Connection established to %s.  LNS session is '%s'\n",
+                      __FUNCTION__, t->tunneltag, t->lns->entname);
         /* Schedule a HELLO */
         tv.tv_sec = HELLO_DELAY;
         tv.tv_usec = 0;
@@ -660,10 +729,13 @@ int control_finish (struct tunnel *t, struct call *c)
                      __FUNCTION__);
             return -EINVAL;
         }
-        l2tp_log (LOG_LOG,
+        /* mf, 03.04.2003: use tunneltag in log message */
+        /* l2tp_log (LOG_LOG,
              "%s: Connection closed to %s, port %d (%s), Local: %d, Remote: %d\n",
              __FUNCTION__, IPADDY (t->peer.sin_addr),
-             ntohs (t->peer.sin_port), t->self->errormsg, t->ourtid, t->tid);
+             ntohs (t->peer.sin_port), t->self->errormsg, t->ourtid, t->tid); */
+        l2tp_log (LOG_LOG, "%s: Connection closed to %s (%s)\n",
+             __FUNCTION__, t->tunneltag, t->self->errormsg); 
         c->needclose = 0;
         c->closing = -1;
         break;
@@ -812,14 +884,20 @@ int control_finish (struct tunnel *t, struct call *c)
 #endif
         if (debug_state)
             l2tp_log (LOG_DEBUG, "%s: Sending ICCN\n", __FUNCTION__);
-        l2tp_log (LOG_LOG,
+        /* mf, 03.04.2003: use tunneltag in log message */
+        /* l2tp_log (LOG_LOG,
              "%s: Call established with %s, Local: %d, Remote: %d, Serial: %d\n",
              __FUNCTION__, IPADDY (t->peer.sin_addr), c->ourcid, c->cid,
+             c->serno); */
+        l2tp_log (LOG_LOG,
+             "%s: Call established with %s, Local: %d, Remote: %d, Serial: %d\n",
+             __FUNCTION__, t->tunneltag, c->ourcid, c->cid,
              c->serno);
         control_xmit (buf);
         po = NULL;
         po = add_opt (po, "passive");
-        po = add_opt (po, "-detach");
+        po = add_opt (po, "nodetach");
+
         if (c->lac)
         {
             if (c->lac->defaultroute)
@@ -911,7 +989,7 @@ int control_finish (struct tunnel *t, struct call *c)
         strncpy (ip2, IPADDY (c->addr), sizeof (ip2));
         po = NULL;
         po = add_opt (po, "passive");
-        po = add_opt (po, "-detach");
+        po = add_opt (po, "nodetach");
         po = add_opt (po, "%s:%s", c->lns->localaddr ? ip1 : "", ip2);
         if (c->lns->authself)
         {
@@ -947,11 +1025,30 @@ int control_finish (struct tunnel *t, struct call *c)
             po = add_opt (po, "file");
             po = add_opt (po, c->lns->pppoptfile);
         }
+            /* mf, 08.04.2003: setup ipparam arguments */
+            my_ipparam[0] = '\0';
+            if (c->lns->ipparam[0])
+              { strncat(my_ipparam, c->lns->ipparam, sizeof(my_ipparam)-strlen(my_ipparam)-1); }
+            if (c->lns->ipparamtunneltag)
+              { if (my_ipparam[0])
+                  { strncat(my_ipparam, ",l2gw=", sizeof(my_ipparam)-strlen(my_ipparam)-1); }
+                strncat(my_ipparam, c->container->tunneltag,
+                        sizeof(my_ipparam)-strlen(my_ipparam)-1);
+              }
+            if (my_ipparam[0])
+              { po = add_opt(po, "ipparam");
+                po = add_opt(po, my_ipparam);
+              }
         start_pppd (c, po);
         opt_destroy (po);
-        l2tp_log (LOG_LOG,
+        /* mf, 03.04.2003: use tunneltag in log message */
+        /* l2tp_log (LOG_LOG,
              "%s: Call established with %s, Local: %d, Remote: %d, Serial: %d\n",
              __FUNCTION__, IPADDY (t->peer.sin_addr), c->ourcid, c->cid,
+             c->serno); */
+        l2tp_log (LOG_LOG,
+             "%s: Call established with %s, Local: %d, Remote: %d, Serial: %d\n",
+             __FUNCTION__, t->tunneltag, c->ourcid, c->cid,
              c->serno);
         break;
     case OCRP:                 /* jz: nothing to do for OCRP, waiting for OCCN */
@@ -959,7 +1056,7 @@ int control_finish (struct tunnel *t, struct call *c)
     case OCCN:                 /* jz: get OCCN, so the only thing we must do is to start the pppd */
         po = NULL;
         po = add_opt (po, "passive");
-        po = add_opt (po, "-detach");
+        po = add_opt (po, "nodetach");
         po = add_opt (po, "file");
         strcat (dummy_buf, c->dial_no); /* jz: use /etc/ppp/dialnumber.options for pppd - kick it if you dont like */
         strcat (dummy_buf, ".options");
@@ -1057,9 +1154,13 @@ int control_finish (struct tunnel *t, struct call *c)
                      __FUNCTION__);
             return -EINVAL;
         }
+        /* mf, 03.04.2003: use tunneltag in log message */
+        /* l2tp_log (LOG_LOG,
+             "%s: Connection closed to %s, serial %d (%s)\n", __FUNCTION__,
+             IPADDY (t->peer.sin_addr), c->serno, c->errormsg); */
         l2tp_log (LOG_LOG,
              "%s: Connection closed to %s, serial %d (%s)\n", __FUNCTION__,
-             IPADDY (t->peer.sin_addr), c->serno, c->errormsg);
+             t->tunneltag, c->serno, c->errormsg);
         c->needclose = 0;
         c->closing = -1;
         break;
@@ -1411,7 +1512,8 @@ inline int expand_payload (struct buffer *buf, struct tunnel *t,
     l2tp_log (LOG_DEBUG, "%s: payload, cid = %d, Ns = %d, Nr = %d\n", __FUNCTION__,
          c->cid, new_hdr->Ns, new_hdr->Nr);
 #endif
-    if (new_hdr->Ns != c->data_seq_num)
+    /* if (new_hdr->Ns != c->data_seq_num) */ /* mf, 03.04.2003: should be data_rec_seq_num, I suppose...*/
+    if (new_hdr->Ns != c->data_rec_seq_num)
     {
         /* RFC1982-esque comparison of serial numbers */
         if (((new_hdr->Ns < c->data_rec_seq_num) && 
@@ -1657,7 +1759,8 @@ void handle_special (struct buffer *buf, struct call *c, _u16 call)
     }
 }
 
-inline int handle_packet (struct buffer *buf, struct tunnel *t,
+/* mf, 14.06.2004: de-inline function handle_packet */
+/*inline*/ int handle_packet (struct buffer *buf, struct tunnel *t,
                           struct call *c)
 {
     int res;

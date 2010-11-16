@@ -138,7 +138,9 @@ int read_packet (struct buffer *buf, int fd, int convert)
             errors++;
             l2tp_log (LOG_DEBUG, "%s: Error %d (%s)\n", __FUNCTION__, errno,
                  strerror (errno));
-            if (errors > 10)
+	    /* mf, 08.06.2004: if pppd dies, read return EBADF (Bad File Descriptor)
+                               in that case, don't bother repeating */
+            if (errors > 10 || errno == EBADF)
             {
                 l2tp_log (LOG_DEBUG,
                      "%s: Too many errors.  Declaring call dead.\n",
@@ -312,11 +314,15 @@ void call_close (struct call *c)
             call_close (tmp);
             tmp = tmp2;
         }
+	/* mf, 16.04.2003: change log message to show tunneltag */
+        // l2tp_log (LOG_LOG,
+        //      "%s : Connection %d closed to %s, port %d (%s)\n", __FUNCTION__,
+        //      c->container->tid,
+        //      IPADDY (c->container->peer.sin_addr),
+        //      ntohs (c->container->peer.sin_port), c->errormsg);
         l2tp_log (LOG_LOG,
-             "%s : Connection %d closed to %s, port %d (%s)\n", __FUNCTION__,
-             c->container->tid,
-             IPADDY (c->container->peer.sin_addr),
-             ntohs (c->container->peer.sin_port), c->errormsg);
+             "%s : Connection closed with peer %s, reason: %s\n",
+             __FUNCTION__, c->container->tunneltag, c->errormsg);
     }
     else
     {
@@ -523,6 +529,10 @@ struct call *new_call (struct tunnel *parent)
         tmp->ourcid = 0x6227;
 #endif
     }
+    else
+      { l2tp_log(LOG_DEBUG, "%s: initializing ourcid to 0\n", __FUNCTION__);
+        tmp->ourcid=0;
+      }
     tmp->dialed[0] = 0;
     tmp->dialing[0] = 0;
     tmp->subaddy[0] = 0;
@@ -535,6 +545,7 @@ struct call *new_call (struct tunnel *parent)
 /*	tmp->rws = -1; */
     tmp->fd = -1;
     tmp->oldptyconf = malloc (sizeof (struct termios));
+    tmp->ptyname[0] = '\0';	/* mf, 08.04.2003: no name for pty yet */
     tmp->pnu = 0;
     tmp->cnu = 0;
     tmp->needclose = 0;

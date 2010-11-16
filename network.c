@@ -25,7 +25,8 @@
 #include "l2tp.h"
 
 char hostname[256];
-unsigned int listen_addy = INADDR_ANY;  /* Address to listen on */
+/* mf, 27.03.2003: now in file.c, config parameter "listenaddr" */
+/* unsigned int listen_addy = INADDR_ANY; */ /* Address to listen on */
 struct sockaddr_in server, from;        /* Server and transmitter structs */
 int server_socket;              /* Server socket */
 #ifdef USE_KERNEL
@@ -35,7 +36,7 @@ int kernel_support;             /* Kernel Support there or not? */
 /*
  * Debugging info
  */
-int debug_tunnel = 0;
+int debug_tunnel = 1;
 int debug_network = 0;          /* Debug networking? */
 int packet_dump = 0;            /* Dump packets? */
 int debug_avp = 1;              /* Debug AVP negotiations? */
@@ -47,7 +48,7 @@ int init_network (void)
     socklen_t length = sizeof (server);
     gethostname (hostname, sizeof (hostname));
     server.sin_family = AF_INET;
-    server.sin_addr.s_addr = htonl (listen_addy);
+    server.sin_addr.s_addr = /* htonl (listen_addy); */ listen_addy;
     server.sin_port = htons (gconfig.port);
     if ((server_socket = socket (PF_INET, SOCK_DGRAM, 0)) < 0)
     {
@@ -60,8 +61,8 @@ int init_network (void)
     if (bind (server_socket, (struct sockaddr *) &server, sizeof (server)))
     {
         close (server_socket);
-        l2tp_log (LOG_CRIT, "%s: Unable to bind socket. Terminating.\n",
-             __FUNCTION__);
+        l2tp_log (LOG_CRIT, "%s: Unable to bind socket (%s). Terminating.\n",
+             __FUNCTION__, inet_ntoa(server.sin_addr));
         return -EINVAL;
     };
     if (getsockname (server_socket, (struct sockaddr *) &server, &length))
@@ -198,17 +199,26 @@ void control_xmit (void *b)
         {
             if (t->self->needclose)
             {
-                l2tp_log (LOG_DEBUG,
+		/* mf, 03.04.2003: provide more peer info in log message */
+	        /* l2tp_log (LOG_DEBUG,
                      "%s: Unable to deliver closing message for tunnel %d. Destroying anyway.\n",
-                     __FUNCTION__, t->ourtid);
+                     __FUNCTION__, t->ourtid); */
+		l2tp_log (LOG_DEBUG,
+		     "%s: Unable to deliver closing message for peer %s\n",
+		     __FUNCTION__, t->tunneltag);
                 t->self->needclose = 0;
                 t->self->closing = -1;
             }
             else
             {
-                l2tp_log (LOG_DEBUG,
+		/* mf, 03.04.2003: provide more peer info in log message */
+	        /* l2tp_log (LOG_DEBUG,
                      "%s: Maximum retries exceeded for tunnel %d.  Closing.\n",
-                     __FUNCTION__, t->ourtid);
+                     __FUNCTION__, t->ourtid); */
+		l2tp_log (LOG_DEBUG,
+		     "%s: Maximum retries exceeded for peer %s\n",
+		     __FUNCTION__, t->tunneltag);
+
                 strcpy (t->self->errormsg, "Timeout");
                 t->self->needclose = -1;
             }
@@ -388,15 +398,23 @@ void network_thread ()
                          * to ack receiving the packet.
                          */
                         if (debug_tunnel)
-                            l2tp_log (LOG_DEBUG,
+			    /* mf, 08.06.2004: args call, tunnel were left out. add them */
+			    /* l2tp_log (LOG_DEBUG,
                                  "%s: no such call %d on tunnel %d.  Sending special ZLB\n",
-                                 __FUNCTION__);
+                                 __FUNCTION__); */
+                             l2tp_log (LOG_DEBUG,
+                                  "%s: no such call %d on tunnel %d.  Sending special ZLB\n",
+                                 __FUNCTION__, call, tunnel);
                         handle_special (buf, c, call);
                     }
                     else
-                        l2tp_log (LOG_DEBUG,
+                        /* mf, 22.04.2003: also log packet source address */
+                        /* l2tp_log (LOG_DEBUG,
                              "%s: unable to find call or tunnel to handle packet.  call = %d, tunnel = %d Dumping.\n",
-                             __FUNCTION__, call, tunnel);
+                             __FUNCTION__, call, tunnel); */
+                        l2tp_log (LOG_DEBUG,
+                             "%s: unable to find call or tunnel to handle packet from %s:%d.  tunnel= %d, call = %d Dumping.\n",
+                             __FUNCTION__, inet_ntoa(from.sin_addr), ntohs(from.sin_port), tunnel, call);
 
                 }
                 else
@@ -431,8 +449,11 @@ void network_thread ()
                     int result;
                     recycle_payload (buf, sc->container->peer);
 #ifdef DEBUG_FLOW_MORE
-                    l2tp_log (LOG_DEBUG, "%s: rws = %d, pSs = %d, pLr = %d\n",
-                         __FUNCTION__, sc->rws, sc->pSs, sc->pLr);
+		/* mf, 03.04.2003: log with tunneltag */
+                    /* l2tp_log (LOG_DEBUG, "%s: rws = %d, pSs = %d, pLr = %d\n",
+		       __FUNCTION__, sc->rws, sc->pSs, sc->pLr); */
+                    l2tp_log (LOG_DEBUG, "%s: payload to %s: rws = %d, pSs = %d, pLr = %d\n",
+                         __FUNCTION__, sc->container->tunneltag, sc->rws, sc->pSs, sc->pLr);
 #endif
 /*					if ((sc->rws>0) && (sc->pSs > sc->pLr + sc->rws) && !sc->rbit) {
 #ifdef DEBUG_FLOW
@@ -472,9 +493,13 @@ void network_thread ()
                     }
                     if (result != 0)
                     {
-                        l2tp_log (LOG_WARN,
+			/* mf, 08.06.2004: add more information to log msg: pppd pid, call id, tunnel id, peer */
+		        /* l2tp_log (LOG_WARN,
                              "%s: tossing read packet, error = %s (%d).  Closing call.\n",
-                             __FUNCTION__, strerror (-result), -result);
+                             __FUNCTION__, strerror (-result), -result); */
+                        l2tp_log (LOG_WARN,
+                             "%s: tossing read packet from pppd(%d), error = %s (%d).  Closing call %s/rc=%d/lc=%d\n",
+                             __FUNCTION__, sc->pppd, strerror (-result), -result, get_tunneltag(sc->container), sc->cid, sc->ourcid);
                         strcpy (sc->errormsg, strerror (-result));
                         sc->needclose = -1;
                     }

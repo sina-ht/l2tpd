@@ -98,15 +98,14 @@ int add_hostname_avp(struct buffer *buf) {
 }
 */
 
-int add_hostname_avp (struct buffer *buf)
+int add_hostname_avp (struct buffer *buf, char *hostname)
 {
-    char names[6] = "eriwan";
     _u16 *raw = (_u16 *) (buf->start + buf->len);
-    raw[0] = htons (0xC | MBIT);
+    raw[0] = htons ((0x6 + strlen(hostname)) | MBIT);
     raw[1] = htons (VENDOR_ID);
     raw[2] = htons (0x7);
-    strcpy ((char *) (&raw[3]), names);
-    buf->len += 12;
+    strcpy ((char *) (&raw[3]), hostname);
+    buf->len += 6 + strlen(hostname);
     return 0;
 }
 
